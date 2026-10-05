@@ -9,13 +9,16 @@ class _FakeStructured:
         self._log.append((self._name, messages))
         if not self._queue:
             raise AssertionError(f"FakeLLM has no response left for {self._name}")
-        return self._queue.pop(0)
+        item = self._queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 class FakeLLM:
     """Deterministic stand-in for a chat model.
 
-    structured: {SchemaClass: [response, ...]} for with_structured_output calls
+    structured: {SchemaClass: [response_or_exception, ...]}
     text: [str, ...] for plain .invoke calls
     """
 
@@ -32,4 +35,7 @@ class FakeLLM:
         self.calls.append(("text", messages))
         if not self._text:
             raise AssertionError("FakeLLM has no text response left")
-        return SimpleNamespace(content=self._text.pop(0))
+        item = self._text.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return SimpleNamespace(content=item)

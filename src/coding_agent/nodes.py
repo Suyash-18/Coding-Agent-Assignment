@@ -5,7 +5,7 @@ from langgraph.types import interrupt
 
 from coding_agent import prompts
 from coding_agent.errors import AgentError, PathViolation
-from coding_agent.llm import clean_text, structured
+from coding_agent.llm import clean_text, invoke_structured
 from coding_agent.schemas import ChangeSet, FileSelection, Plan
 from coding_agent.state import AgentState
 from coding_agent.tools import build_diff, is_protected, list_files, read_file, safe_path
@@ -69,8 +69,8 @@ class AgentNodes:
     # ---- LLM nodes -------------------------------------------------------
     def select_files(self, state: AgentState) -> dict[str, Any]:
         tree = state["file_tree"]
-        result = structured(self.llm, FileSelection).invoke(
-            prompts.select_files_messages(state["task"], tree)
+        result = invoke_structured(
+            self.llm, FileSelection, prompts.select_files_messages(state["task"], tree)
         )
         known = set(tree)
         chosen: list[str] = []
@@ -89,19 +89,20 @@ class AgentNodes:
         }
 
     def make_plan(self, state: AgentState) -> dict[str, Any]:
-        plan = structured(self.llm, Plan).invoke(
-            prompts.plan_messages(state["task"], state["file_contents"])
+        plan = invoke_structured(
+            self.llm, Plan, prompts.plan_messages(state["task"], state["file_contents"])
         )
         return {"plan": plan.model_dump()}
 
     def generate_changes(self, state: AgentState) -> dict[str, Any]:
         repo = state["repo_path"]
         root = Path(repo).resolve()
-        result = structured(self.llm, ChangeSet).invoke(
+        result = invoke_structured(
+            self.llm, ChangeSet,
             prompts.generate_messages(
                 state["task"], state["plan"], state["file_contents"],
                 state.get("feedback", ""),
-            )
+            ),
         )
         changes: dict[str, str] = {}
         for item in result.changes:
