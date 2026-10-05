@@ -34,12 +34,15 @@ _SUMMARIES = {
     "plan_approval": lambda u: {"approved": u.get("plan_approved", False)},
     "generate_changes": lambda u: {"files": list(u["changes"])},
     "explain": lambda u: {"explanation": u["explanation"]},
+    "expand_files": lambda u: {"relevant_files": u["relevant_files"]},
 }
 
 
 def _translate(node: str, update: dict[str, Any]) -> AgentEvent:
     if node == "make_plan":
-        return AgentEvent("plan", node, {"plan": update["plan"]})
+        if "plan" in update:
+            return AgentEvent("plan", node, {"plan": update["plan"]})
+        return AgentEvent("node_done", node, {"needs_files": update["needs_files"]})
     if node == "build_diff":
         return AgentEvent("diff", node, {"diff": update["diff"], "files": update["changed_files"]})
     summarize = _SUMMARIES.get(node, lambda u: {})
@@ -69,12 +72,13 @@ def _drive(graph, graph_input, thread_id: str) -> Iterator[AgentEvent]:
                 yield _translate(node, update or {})
         final = graph.get_state(config).values
         yield AgentEvent("done", data={
-            "status": final.get("status", "completed"),
-            "plan": final.get("plan"),
-            "diff": final.get("diff", ""),
-            "changed_files": final.get("changed_files", []),
-            "explanation": final.get("explanation", ""),
-        })
+                "status": final.get("status", "proposed"),
+                "applied": final.get("applied", False),
+                "plan": final.get("plan"),
+                "diff": final.get("diff", ""),
+                "changed_files": final.get("changed_files", []),
+                "explanation": final.get("explanation", ""),
+            })
     except Exception as exc:  # boundary: never leak a traceback to the UI
         yield _error(exc)
 

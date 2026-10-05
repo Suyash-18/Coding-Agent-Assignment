@@ -62,12 +62,51 @@ class TestReadFiles:
             make().read_files({"repo_path": str(SAMPLE), "relevant_files": ["routes.py"]})
 
 
-def test_make_plan_returns_dict():
-    plan = Plan(summary="s", steps=[PlanStep(file="a.py", action="x")], assumptions=[])
-    out = make(structured={Plan: [plan]}).make_plan({"task": "t", "file_contents": {"a.py": "1"}})
-    assert out["plan"]["summary"] == "s"
-    assert out["plan"]["steps"][0]["file"] == "a.py"
+class TestMakePlan:
+    TREE = ["a.py", "b.py", "c.py"]
 
+    def state(self, **extra):
+        return {"task": "t", "file_tree": self.TREE, "file_contents": {"a.py": "1"}, **extra}
+
+    def plan(self, needs=(), steps=True):
+        return Plan(
+            summary="s",
+            steps=[PlanStep(file="a.py", action="x")] if steps else [],
+            assumptions=[],
+            needs_files=list(needs),
+        )
+
+    def test_returns_plan_without_needs_field(self):
+        out = make(structured={Plan: [self.plan()]}).make_plan(self.state())
+        assert out["plan"]["summary"] == "s"
+        assert "needs_files" not in out["plan"]
+        assert out["needs_files"] == []
+
+    def test_valid_request_triggers_expansion(self):
+        n = make(structured={Plan: [self.plan(needs=["./b.py", "ghost.py", "a.py"])]})
+        assert n.make_plan(self.state()) == {"needs_files": ["b.py"]}  # unknown + already-read dropped
+
+    def test_request_is_capped(self):
+        tree = [f"f{i}.py" for i in range(8)]
+        state = {"task": "t", "file_tree": tree, "file_contents": {"f0.py": "1"}}
+        out = make(structured={Plan: [self.plan(needs=tree[1:])]}).make_plan(state)
+        assert len(out["needs_files"]) == nodes_module.MAX_EXTRA_FILES
+
+    def test_no_second_expansion(self):
+        out = make(structured={Plan: [self.plan(needs=["b.py"])]}).make_plan(self.state(expansions=1))
+        assert "plan" in out and out["needs_files"] == []
+
+    def test_empty_plan_without_valid_request_raises(self):
+        n = make(structured={Plan: [self.plan(needs=["ghost.py"], steps=False)]})
+        with pytest.raises(AgentError, match="could not"):
+            n.make_plan(self.state())
+
+
+def test_expand_files_merges_and_counts():
+    state = {"relevant_files": ["a.py"], "needs_files": ["b.py", "a.py"], "expansions": 0}
+    assert make().expand_files(state) == {
+        "relevant_files": ["a.py", "b.py"], "needs_files": [], "expansions": 1,
+    }
 
 class TestGenerateChanges:
     PLAN = {"summary": "s", "steps": [], "assumptions": []}
@@ -110,4 +149,4 @@ def test_explain_strips_reasoning():
     state = {"task": "t", "plan": {"summary": "s", "steps": [], "assumptions": []}, "diff": "d"}
     out = n.explain(state)
     assert out["explanation"] == "Added validation."
-    assert out["status"] == "completed"
+    assert out["status"] == "proposed"

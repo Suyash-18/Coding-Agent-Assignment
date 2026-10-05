@@ -29,17 +29,22 @@ def test_create_user_rejects_negative_age(client):
 '''
 
 
-def make_llm(files=("models.py", "tests/test_users.py", "ghost.py")):
+def real_plan() -> Plan:
+    return Plan(
+        summary="Add field constraints and a test.",
+        steps=[PlanStep(file="models.py", action="Add Field constraints"),
+               PlanStep(file="tests/test_users.py", action="Test invalid age")],
+        assumptions=["Age must be between 0 and 130"],
+        needs_files=[],
+    )
+
+
+def make_llm(files=("models.py", "tests/test_users.py", "ghost.py"), plan_requests=()):
     old_tests = (SAMPLE / "tests" / "test_users.py").read_text()
     return FakeLLM(
         structured={
             FileSelection: [FileSelection(relevant_files=list(files), reasoning="models + tests")],
-            Plan: [Plan(
-                summary="Add field constraints and a test.",
-                steps=[PlanStep(file="models.py", action="Add Field constraints"),
-                       PlanStep(file="tests/test_users.py", action="Test invalid age")],
-                assumptions=["Age must be between 0 and 130"],
-            )],
+            Plan: [*plan_requests, real_plan()],
             ChangeSet: [ChangeSet(changes=[
                 FileChange(path="models.py", content=VALIDATED_MODELS),
                 FileChange(path="tests/test_users.py", content=old_tests + NEW_TEST),
@@ -67,10 +72,26 @@ def test_full_flow_with_approval(thread_id):
     second = list(resume_agent(thread_id, {"approved": True}))
     assert types(second) == ["node_done", "node_done", "diff", "node_done", "done"]
     done = second[-1].data
-    assert done["status"] == "completed"
+    assert done["status"] == "proposed"
+    assert done["applied"] is False
     assert "Field(ge=0, le=130)" in done["diff"]
     assert done["changed_files"] == ["models.py", "tests/test_users.py"]
     assert "Field" not in (SAMPLE / "models.py").read_text()  # repo untouched
+
+
+def test_planner_can_request_more_files(thread_id):
+    draft = Plan(summary="need entry point", steps=[], assumptions=[], needs_files=["main.py"])
+    llm = make_llm(files=("routes.py",), plan_requests=[draft])
+    events = list(stream_agent("Add a /health endpoint", str(SAMPLE), thread_id=thread_id, llm=llm))
+
+    assert types(events) == ["start"] + ["node_done"] * 6 + ["plan", "interrupt"]
+    assert events[4].data == {"needs_files": ["main.py"]}
+    assert events[5].node == "expand_files"
+    assert events[6].data["files_read"] == ["routes.py", "main.py"]
+
+    plan_calls = [msgs for name, msgs in llm.calls if name == "Plan"]
+    assert len(plan_calls) == 2
+    assert '<file path="main.py">' in plan_calls[1][-1].content
 
 
 def test_rejected_plan_stops_cleanly(thread_id):

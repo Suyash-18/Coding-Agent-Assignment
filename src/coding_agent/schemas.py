@@ -19,7 +19,12 @@ class Plan(BaseModel):
     assumptions: list[str] = Field(
         description="Assumptions made about ambiguous requirements. Empty list if none."
     )
-
+    needs_files: list[str] = Field(
+        description=(
+            "Paths from the 'Not yet shown' list that are essential to see before "
+            "planning. Empty list in most cases."
+        )
+    )
 
 class FileChange(BaseModel):
     path: str = Field(description="Path relative to the repo root.")

@@ -11,6 +11,8 @@ from coding_agent.state import AgentState
 from coding_agent.tools import build_diff, is_protected, list_files, read_file, safe_path
 
 MAX_SELECTED_FILES = 6
+MAX_EXPANSIONS = 1
+MAX_EXTRA_FILES = 3
 MAX_CONTEXT_CHARS = 20_000
 MAX_DIFF_CHARS_IN_PROMPT = 12_000
 
@@ -41,6 +43,18 @@ class AgentNodes:
                 f"limit {MAX_CONTEXT_CHARS:,}). Try a more specific task."
             )
         return {"file_contents": contents}
+
+    def expand_files(self, state: AgentState) -> dict[str, Any]:
+        current = list(state["relevant_files"])
+        merged = current + [p for p in state["needs_files"] if p not in current]
+        return {
+            "relevant_files": merged,
+            "needs_files": [],
+            "expansions": state.get("expansions", 0) + 1,
+        }
+
+    def route_after_draft(self, state: AgentState) -> str:
+        return "expand" if state.get("needs_files") else "approve"
 
     def plan_approval(self, state: AgentState) -> dict[str, Any]:
         # Keep this node side-effect free: on resume it re-runs from the top.
@@ -89,10 +103,20 @@ class AgentNodes:
         }
 
     def make_plan(self, state: AgentState) -> dict[str, Any]:
+        contents = state["file_contents"]
+        unread = [p for p in state["file_tree"] if p not in contents]
         plan = invoke_structured(
-            self.llm, Plan, prompts.plan_messages(state["task"], state["file_contents"])
+            self.llm, Plan, prompts.plan_messages(state["task"], contents, unread)
         )
-        return {"plan": plan.model_dump()}
+        can_expand = state.get("expansions", 0) < MAX_EXPANSIONS
+        wanted = self._valid_requests(plan.needs_files, unread) if can_expand else []
+        if wanted:  # discard this draft; read the requested files and plan again
+            return {"needs_files": wanted}
+        if not plan.steps:
+            raise AgentError(
+                "The model could not produce a plan for this task. Try rephrasing it."
+            )
+        return {"plan": plan.model_dump(exclude={"needs_files"}), "needs_files": []}
 
     def generate_changes(self, state: AgentState) -> dict[str, Any]:
         repo = state["repo_path"]
@@ -122,9 +146,19 @@ class AgentNodes:
         diff = state["diff"][:MAX_DIFF_CHARS_IN_PROMPT]
         reply = self.llm.invoke(prompts.explain_messages(state["task"], state["plan"], diff))
         text = clean_text(reply.content) or state["plan"]["summary"]
-        return {"explanation": text, "status": "completed"}
+        return {"explanation": text, "status": "proposed"}
 
     # ---- helpers ---------------------------------------------------------
+    @staticmethod
+    def _valid_requests(requested: list[str], unread: list[str]) -> list[str]:
+        allowed = set(unread)
+        picked: list[str] = []
+        for raw in requested:
+            path = _clean_rel(raw)
+            if path in allowed and path not in picked:
+                picked.append(path)
+        return picked[:MAX_EXTRA_FILES]
+
     def _existing(self, state: AgentState, rel: str) -> str:
         """Current content of a file: what the model saw, else disk, else empty."""
         seen = state.get("file_contents", {})

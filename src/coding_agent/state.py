@@ -11,6 +11,8 @@ class AgentState(TypedDict, total=False):
     relevant_files: list[str]
     selection_reason: str
     file_contents: dict[str, str]
+    needs_files: list[str]
+    expansions: int
     # planning
     plan: dict[str, Any]
     plan_approved: bool
@@ -20,5 +22,6 @@ class AgentState(TypedDict, total=False):
     changed_files: list[str]
     diff: str
     explanation: str
-    # outcome: "completed" | "rejected"
-    status: str
+    # outcome
+    status: str  # "proposed" | "rejected"  (Phase 4 adds "applied")
+    applied: bool

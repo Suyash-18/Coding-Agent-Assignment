@@ -12,6 +12,7 @@ def build_graph(llm, checkpointer=None):
     g.add_node("select_files", nodes.select_files)
     g.add_node("read_files", nodes.read_files)
     g.add_node("make_plan", nodes.make_plan)
+    g.add_node("expand_files", nodes.expand_files)
     g.add_node("plan_approval", nodes.plan_approval)
     g.add_node("generate_changes", nodes.generate_changes)
     g.add_node("build_diff", nodes.build_diff_node)
@@ -21,7 +22,12 @@ def build_graph(llm, checkpointer=None):
     g.add_edge("scan_repo", "select_files")
     g.add_edge("select_files", "read_files")
     g.add_edge("read_files", "make_plan")
-    g.add_edge("make_plan", "plan_approval")
+    g.add_conditional_edges(
+        "make_plan",
+        nodes.route_after_draft,
+        {"expand": "expand_files", "approve": "plan_approval"},
+    )
+    g.add_edge("expand_files", "read_files")
     g.add_conditional_edges(
         "plan_approval",
         nodes.route_after_plan,

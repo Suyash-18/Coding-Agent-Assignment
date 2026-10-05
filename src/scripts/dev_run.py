@@ -20,6 +20,8 @@ def show(ev) -> None:
         print(f"[approval needed] files: {ev.data['files']}")
     elif ev.type == "done":
         print(f"[done] status={ev.data['status']}")
+        if ev.data["status"] == "proposed":
+            print("No files were changed. This is a proposal only; applying comes in Phase 4.")
         if ev.data["explanation"]:
             print("Explanation:", ev.data["explanation"])
     elif ev.type == "error":
