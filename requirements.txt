@@ -4,3 +4,5 @@ pydantic
 typer 
 rich 
 python-dotenv
+fastapi 
+httpx
