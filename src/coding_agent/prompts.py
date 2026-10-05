@@ -57,7 +57,14 @@ def plan_messages(task: str, contents: dict[str, str], unread: list[str]):
     return [SystemMessage(content=system), HumanMessage(content=human)]
 
 
-def generate_messages(task: str, plan: dict, contents: dict[str, str], feedback: str = ""):
+def generate_messages(
+    task: str,
+    plan: dict,
+    contents: dict[str, str],
+    feedback: str = "",
+    previous: dict[str, str] | None = None,
+    test_output: str = "",
+):
     system = (
         "You are a careful engineer applying an approved plan. Return the COMPLETE "
         "new content of every file you change or create (never snippets or diffs). "
@@ -66,14 +73,28 @@ def generate_messages(task: str, plan: dict, contents: dict[str, str], feedback:
         "that actually change. Add tests when the plan calls for them. Do not touch "
         "secrets or files outside the project. " + _NO_TOOLS + " " + _DATA_NOTICE
     )
+    if previous:
+        system += (
+            " This is a retry: your previous attempt failed its tests. Fix the code. "
+            "Never weaken, delete, or skip tests just to make them pass, unless a "
+            "test itself is clearly wrong."
+        )
     human = (
         f"Task:\n{task}\n\nApproved plan:\n{format_plan(plan)}\n\n"
         f"Files:\n{format_files(contents)}"
     )
     if feedback:
         human += f"\n\nExtra notes from the developer:\n{feedback}"
+    if previous:
+        human += (
+            "\n\nYour previous attempt (current contents of the files you changed):\n"
+            f"{format_files(previous)}\n\n"
+            f"Test results from the previous attempt (FAILED):\n{test_output}\n\n"
+            "Return the corrected COMPLETE content of every file that needs to change. "
+            "Files you do not return keep their previous-attempt content. Returning a "
+            "file with its original content reverts it."
+        )
     return [SystemMessage(content=system), HumanMessage(content=human)]
-
 
 def explain_messages(task: str, plan: dict, diff: str):
     system = (

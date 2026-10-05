@@ -22,6 +22,15 @@ class AgentState(TypedDict, total=False):
     changed_files: list[str]
     diff: str
     explanation: str
+    # validation
+    attempts: int
+    test_passed: bool
+    test_output: str
+    no_tests: bool
+    will_retry: bool
+    # applying
+    apply_approved: bool
+    applied_files: list[str]
     # outcome
-    status: str  # "proposed" | "rejected"  (Phase 4 adds "applied")
+    status: str  # proposed | applied | declined | rejected
     applied: bool

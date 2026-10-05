@@ -1,6 +1,9 @@
+import shutil
 from pathlib import Path
 
 import pytest
+
+SAMPLE = Path(__file__).resolve().parent.parent / "sample_project"
 
 
 @pytest.fixture
@@ -15,3 +18,13 @@ def make_repo():
         return root
 
     return _make
+
+
+@pytest.fixture
+def sample_repo(tmp_path) -> Path:
+    """A throwaway copy of sample_project that tests may freely modify."""
+    dest = tmp_path / "sample_repo"
+    shutil.copytree(
+        SAMPLE, dest, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache")
+    )
+    return dest
