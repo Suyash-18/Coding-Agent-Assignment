@@ -164,3 +164,52 @@ def apply_changes(repo: str | Path, changes: dict[str, str]) -> list[str]:
         target.write_text(content, encoding="utf-8")
         written.append(rel)
     return written
+
+@dataclass(frozen=True)
+class TestResult:
+    __test__ = False  # stop pytest from trying to collect this class
+
+    passed: bool
+    returncode: int
+    output: str
+    timed_out: bool = False
+
+
+_SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def _clean_env() -> dict[str, str]:
+    """Environment for the test subprocess: no API keys or secrets."""
+    env = {
+        k: v for k, v in os.environ.items()
+        if not any(marker in k.upper() for marker in _SECRET_MARKERS)
+    }
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
+def _to_text(data: str | bytes | None) -> str:
+    if data is None:
+        return ""
+    return data.decode("utf-8", errors="replace") if isinstance(data, bytes) else data
+
+
+def _tail(text: str, limit: int = MAX_TEST_OUTPUT_CHARS) -> str:
+    return text if len(text) <= limit else "...[truncated]\n" + text[-limit:]
+
+
+def run_tests(root: str | Path, timeout: int = 60) -> TestResult:
+    """Run pytest in root with a timeout and without access to our secrets."""
+    folder = Path(root)
+    if not folder.is_dir():
+        raise ToolError(f"Not a directory: {root}")
+    cmd = [sys.executable, "-m", "pytest", "-q", "--tb=short", "-p", "no:cacheprovider"]
+    try:
+        proc = subprocess.run(
+            cmd, cwd=folder, env=_clean_env(), capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = _to_text(exc.stdout) + _to_text(exc.stderr)
+        return TestResult(False, -1, _tail(partial + f"\nTimed out after {timeout}s"), True)
+    return TestResult(proc.returncode == 0, proc.returncode, _tail(proc.stdout + proc.stderr))
