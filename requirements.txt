@@ -1,0 +1,6 @@
+langgraph 
+langchain-groq 
+pydantic 
+typer 
+rich 
+python-dotenv
