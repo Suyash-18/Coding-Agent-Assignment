@@ -102,3 +102,65 @@ def read_file(
         return target.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise ToolError(f"File is not valid UTF-8 text: {rel_path}") from exc
+
+def build_diff(old: str, new: str, path: str) -> str:
+    """Unified diff between old and new content (empty string if identical)."""
+    lines = difflib.unified_diff(
+        old.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        fromfile=f"a/{path}" if old else "/dev/null",
+        tofile=f"b/{path}",
+    )
+    out = []
+    for line in lines:
+        out.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
+    return "".join(out)
+
+
+def _copy_ignore(directory: str, names: list[str]) -> list[str]:
+    skipped = []
+    for name in names:
+        full = Path(directory) / name
+        if full.is_symlink() or name in IGNORED_DIRS or is_protected(name):
+            skipped.append(name)
+    return skipped
+
+
+def copy_to_temp(repo: str | Path) -> Path:
+    """Copy the repo (minus secrets, venvs, caches) to a fresh temp folder."""
+    root = Path(repo).resolve()
+    if not root.is_dir():
+        raise ToolError(f"Not a directory: {repo}")
+    tmp = Path(tempfile.mkdtemp(prefix="coding_agent_"))
+    shutil.copytree(root, tmp, dirs_exist_ok=True, ignore=_copy_ignore)
+    return tmp
+
+
+def cleanup_temp(path: str | Path) -> None:
+    """Delete a temp copy. Refuses to delete anything not made by copy_to_temp."""
+    target = Path(path)
+    if not target.name.startswith("coding_agent_"):
+        raise ToolError(f"Refusing to delete a folder we did not create: {path}")
+    shutil.rmtree(target, ignore_errors=True)
+
+
+def apply_changes(repo: str | Path, changes: dict[str, str]) -> list[str]:
+    """Write {relative_path: new_content}. Validates everything before writing."""
+    root = Path(repo).resolve()
+    planned: list[tuple[str, Path, str]] = []
+    for rel, content in changes.items():
+        if not isinstance(content, str):
+            raise ToolError(f"Content for {rel} must be text")
+        target = safe_path(root, rel)
+        if target == root or target.is_dir():
+            raise ToolError(f"Not a file path: {rel}")
+        if is_protected(target.relative_to(root)):
+            raise PathViolation(f"Writing to protected file is blocked: {rel}")
+        planned.append((rel, target, content))
+
+    written = []
+    for rel, target, content in planned:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        written.append(rel)
+    return written
