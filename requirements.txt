@@ -6,3 +6,6 @@ rich
 python-dotenv
 fastapi 
 httpx
+requests
+streamlit
+fastapi[standard]
