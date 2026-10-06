@@ -23,7 +23,7 @@ def make_repo():
 @pytest.fixture
 def sample_repo(tmp_path) -> Path:
     """A throwaway copy of sample_project that tests may freely modify."""
-    dest = tmp_path / "sample_repo"
+    dest = tmp_path / "sample_project"
     shutil.copytree(
         SAMPLE, dest, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache")
     )

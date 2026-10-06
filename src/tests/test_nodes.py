@@ -150,3 +150,68 @@ def test_explain_strips_reasoning():
     out = n.explain(state)
     assert out["explanation"] == "Added validation."
     assert out["status"] == "proposed"
+
+CALC = {
+    "calc.py": "def add(a, b):\n    return a + b\n",
+    "test_calc.py": "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+}
+FIXED_ADD = "def add(a, b):\n    return b + a\n"
+BROKEN_ADD = "def add(a, b):\n    return a - b\n"
+
+
+class TestRunTestsNode:
+    def state(self, repo, changes, **extra):
+        return {"repo_path": str(repo), "changes": changes, **extra}
+
+    def test_passing_change(self, tmp_path, make_repo):
+        repo = make_repo(tmp_path / "repo", CALC)
+        out = make().run_tests_node(self.state(repo, {"calc.py": FIXED_ADD}))
+        assert out["test_passed"] and out["attempts"] == 1 and not out["will_retry"]
+        assert (repo / "calc.py").read_text() == CALC["calc.py"]  # real repo untouched
+
+    def test_failing_change_requests_retry(self, tmp_path, make_repo):
+        repo = make_repo(tmp_path / "repo", CALC)
+        out = make().run_tests_node(self.state(repo, {"calc.py": BROKEN_ADD}))
+        assert not out["test_passed"] and out["will_retry"]
+        assert "assert" in out["test_output"]
+
+    def test_gives_up_after_max_retries(self, tmp_path, make_repo):
+        repo = make_repo(tmp_path / "repo", CALC)
+        state = self.state(repo, {"calc.py": BROKEN_ADD}, attempts=nodes_module.MAX_RETRIES)
+        out = make().run_tests_node(state)
+        assert out["attempts"] == nodes_module.MAX_RETRIES + 1
+        assert not out["test_passed"] and not out["will_retry"]
+
+    def test_no_tests_does_not_retry(self, tmp_path, make_repo):
+        repo = make_repo(tmp_path / "repo", {"calc.py": CALC["calc.py"]})
+        out = make().run_tests_node(self.state(repo, {"calc.py": FIXED_ADD}))
+        assert out["no_tests"] and not out["test_passed"] and not out["will_retry"]
+
+
+def test_generate_changes_retry_merges_and_reverts(tmp_path, make_repo):
+    repo = make_repo(tmp_path / "repo", CALC)
+    llm = FakeLLM(structured={ChangeSet: [ChangeSet(changes=[
+        FileChange(path="calc.py", content=FIXED_ADD),
+        FileChange(path="test_calc.py", content=CALC["test_calc.py"]),  # revert to original
+    ])]})
+    state = {
+        "task": "t", "repo_path": str(repo),
+        "plan": {"summary": "s", "steps": [], "assumptions": []},
+        "file_contents": dict(CALC),
+        "attempts": 1, "test_passed": False, "test_output": "FAILED test_add",
+        "changes": {"calc.py": BROKEN_ADD, "test_calc.py": "def test_add():\n    pass\n"},
+    }
+    out = AgentNodes(llm).generate_changes(state)
+    assert out["changes"] == {"calc.py": FIXED_ADD}  # fixed, and the test edit was reverted
+    prompt = llm.calls[0][1][-1].content
+    assert "FAILED test_add" in prompt and BROKEN_ADD in prompt
+
+
+def test_apply_changes_node_writes_files(tmp_path, make_repo):
+    repo = make_repo(tmp_path / "repo", CALC)
+    out = make().apply_changes_node(
+        {"repo_path": str(repo), "changes": {"calc.py": FIXED_ADD, "new.py": "x = 1\n"}}
+    )
+    assert out["applied"] and out["status"] == "applied"
+    assert out["applied_files"] == ["calc.py", "new.py"]
+    assert (repo / "calc.py").read_text() == FIXED_ADD

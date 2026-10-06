@@ -131,17 +131,19 @@ def copy_to_temp(repo: str | Path) -> Path:
     root = Path(repo).resolve()
     if not root.is_dir():
         raise ToolError(f"Not a directory: {repo}")
-    tmp = Path(tempfile.mkdtemp(prefix="coding_agent_"))
-    shutil.copytree(root, tmp, dirs_exist_ok=True, ignore=_copy_ignore)
-    return tmp
+    container = Path(tempfile.mkdtemp(prefix="coding_agent_"))
+    dest = container / root.name  # keep the folder name so `import <name>` hits the copy
+    shutil.copytree(root, dest, ignore=_copy_ignore)
+    return dest
 
 
 def cleanup_temp(path: str | Path) -> None:
     """Delete a temp copy. Refuses to delete anything not made by copy_to_temp."""
     target = Path(path)
-    if not target.name.startswith("coding_agent_"):
+    container = target if target.name.startswith("coding_agent_") else target.parent
+    if not container.name.startswith("coding_agent_"):
         raise ToolError(f"Refusing to delete a folder we did not create: {path}")
-    shutil.rmtree(target, ignore_errors=True)
+    shutil.rmtree(container, ignore_errors=True)
 
 
 def apply_changes(repo: str | Path, changes: dict[str, str]) -> list[str]:
@@ -203,10 +205,12 @@ def run_tests(root: str | Path, timeout: int = 60) -> TestResult:
     folder = Path(root)
     if not folder.is_dir():
         raise ToolError(f"Not a directory: {root}")
+    env = _clean_env()
+    env["PYTHONPATH"] = os.pathsep.join([str(folder.parent), str(folder)])
     cmd = [sys.executable, "-m", "pytest", "-q", "--tb=short", "-p", "no:cacheprovider"]
     try:
         proc = subprocess.run(
-            cmd, cwd=folder, env=_clean_env(), capture_output=True,
+            cmd, cwd=folder, env=env, capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:

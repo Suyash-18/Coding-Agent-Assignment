@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from coding_agent import tools
-from coding_agent.tools import cleanup_temp, copy_to_temp, run_tests
+from coding_agent.tools import apply_changes, cleanup_temp, copy_to_temp, run_tests
 
 SAMPLE = Path(__file__).resolve().parent.parent / "sample_project"
 
@@ -56,3 +56,38 @@ def test_sample_project_passes_in_temp_copy():
         assert "7 passed" in result.output
     finally:
         cleanup_temp(copy)
+
+def test_temp_copy_runs_its_own_code_not_the_original():
+    """Fails if tests import the ORIGINAL sample project instead of the temp copy."""
+    work = copy_to_temp(SAMPLE)
+    try:
+        assert run_tests(work).passed
+        original = (work / "models.py").read_text(encoding="utf-8")
+        apply_changes(work, {"models.py": original + "\nraise RuntimeError('canary')\n"})
+        assert not run_tests(work).passed
+    finally:
+        cleanup_temp(work)
+
+
+def test_package_style_imports_resolve_to_the_copy(tmp_path, make_repo, monkeypatch):
+    """Regression: `from <folder>.x import ...` must hit the copy, even if the original is importable."""
+    repo = make_repo(tmp_path / "demo_pkg", {
+        "calc.py": "def add(a, b):\n    return a + b\n",
+        "test_calc.py": "from demo_pkg.calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+    })
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))  # original importable, like an editable install
+    work = copy_to_temp(repo)
+    try:
+        assert run_tests(work).passed
+        apply_changes(work, {"calc.py": "def add(a, b):\n    return a - b\n"})
+        assert not run_tests(work).passed  # a broken change must be detected
+    finally:
+        cleanup_temp(work)
+
+
+def test_cleanup_removes_the_whole_container(tmp_path, make_repo):
+    repo = make_repo(tmp_path / "demo_pkg", {"a.py": "x = 1\n"})
+    work = copy_to_temp(repo)
+    container = work.parent
+    cleanup_temp(work)
+    assert not container.exists()
