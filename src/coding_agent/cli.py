@@ -12,6 +12,7 @@ Exit codes
 
 from __future__ import annotations
 
+import logging
 import sys
 import uuid
 from pathlib import Path
@@ -24,7 +25,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from coding_agent.runner import AgentEvent, resume_agent, stream_agent
+from coding_agent.runner import AgentEvent, resume_agent, run_log_path, stream_agent
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -151,10 +152,10 @@ class Renderer:
 
     def _on_error(self, ev: AgentEvent) -> None:
         kind = ev.data.get("kind", "Error")
-        self.console.print(
-            Panel(escape(ev.data.get("message", "Unknown error")), title=f"Error ({kind})",
-                  border_style="red")
-        )
+        body = escape(ev.data.get("message", "Unknown error"))
+        if ev.data.get("hint"):
+            body += f"\n\n[dim]{escape(ev.data['hint'])}[/dim]"
+        self.console.print(Panel(body, title=f"Error ({kind})", border_style="red"))
 
     # -- approvals and summary
     def apply_summary(self, data: dict[str, Any]) -> None:
@@ -189,6 +190,17 @@ class Renderer:
             self.warn("Tests did not pass: treat this result as unverified (exit code 2)")
             return EXIT_UNVERIFIED
         return EXIT_OK
+
+
+class _RetryNotices(logging.Handler):
+    """Shows model retry/backoff warnings (logger 'coding_agent.llm') as dim notices."""
+
+    def __init__(self, renderer: Renderer):
+        super().__init__(level=logging.WARNING)
+        self._renderer = renderer
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._renderer.warn(record.getMessage())
 
 
 # ---- status text shown while the agent works ------------------------------
@@ -272,22 +284,32 @@ def execute(
     done: AgentEvent | None = None
     failed = False
 
-    while True:
-        pending: AgentEvent | None = None
-        with console.status(label):
-            for ev in stream:
-                if ev.type == "interrupt":
-                    pending = ev
-                    break
-                r.show(ev)
-                failed = failed or ev.type == "error"
-                if ev.type == "done":
-                    done = ev
-                label = _next_label(ev, label)
-        if pending is None:
-            break
-        decision = _decide(pending.data, yes=yes, dry_run=dry_run, repo=repo, r=r)
-        stream = resume_agent(thread_id, decision)
+    llm_logger = logging.getLogger("coding_agent.llm")
+    notices = _RetryNotices(r)
+    llm_logger.addHandler(notices)
+    try:
+        while True:
+            pending: AgentEvent | None = None
+            with console.status(label):
+                for ev in stream:
+                    if ev.type == "interrupt":
+                        pending = ev
+                        break
+                    r.show(ev)
+                    failed = failed or ev.type == "error"
+                    if ev.type == "done":
+                        done = ev
+                    label = _next_label(ev, label)
+            if pending is None:
+                break
+            decision = _decide(pending.data, yes=yes, dry_run=dry_run, repo=repo, r=r)
+            stream = resume_agent(thread_id, decision)
+    finally:
+        llm_logger.removeHandler(notices)
+
+    log_path = run_log_path(thread_id)
+    if log_path:
+        r.info(f"Run log: {log_path}")
 
     if failed:
         return EXIT_ERROR

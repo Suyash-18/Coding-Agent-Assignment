@@ -1,18 +1,28 @@
+import traceback
 import uuid
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from coding_agent.config import DEFAULT_MODEL, ConfigError
+from coding_agent.config import DEFAULT_MODEL
 from coding_agent.errors import AgentError
 from coding_agent.graph import build_graph
 from coding_agent.llm import get_llm
+from coding_agent.runlog import RunLog
 
 _CHECKPOINTER = MemorySaver()
 _GRAPHS: dict[str, Any] = {}
+_LOGS: dict[str, RunLog] = {}
+
+
+def run_log_path(thread_id: str) -> Path | None:
+    """The JSON-lines log of a run, once something has been written to it."""
+    log = _LOGS.get(thread_id)
+    return log.path if log and log.path and log.path.exists() else None
 
 
 @dataclass
@@ -62,11 +72,14 @@ def _translate(node: str, update: dict[str, Any]) -> AgentEvent | None:
 
 
 def _error(exc: Exception) -> AgentEvent:
-    if isinstance(exc, (AgentError, ConfigError)):
+    if isinstance(exc, AgentError):
         message = str(exc)
     else:
         message = f"Unexpected error: {type(exc).__name__}: {exc}"
-    return AgentEvent("error", data={"message": message, "kind": type(exc).__name__})
+    hint = getattr(exc, "hint", "") if isinstance(exc, AgentError) else ""
+    return AgentEvent(
+        "error", data={"message": message, "kind": type(exc).__name__, "hint": hint}
+    )
 
 
 def _config(thread_id: str) -> dict[str, Any]:
@@ -74,6 +87,14 @@ def _config(thread_id: str) -> dict[str, Any]:
 
 
 def _drive(graph, graph_input, thread_id: str) -> Iterator[AgentEvent]:
+    log = _LOGS.get(thread_id)
+    for ev in _drive_events(graph, graph_input, thread_id, log):
+        if log:
+            log.event(ev)
+        yield ev
+
+
+def _drive_events(graph, graph_input, thread_id: str, log: RunLog | None) -> Iterator[AgentEvent]:
     config = _config(thread_id)
     try:
         for chunk in graph.stream(graph_input, config, stream_mode="updates"):
@@ -96,6 +117,8 @@ def _drive(graph, graph_input, thread_id: str) -> Iterator[AgentEvent]:
             "explanation": final.get("explanation", ""),
         })
     except Exception as exc:  # boundary: never leak a traceback to the UI
+        if log:
+            log.write("traceback", traceback=traceback.format_exc())  # kept in the log only
         yield _error(exc)
 
 
@@ -108,12 +131,19 @@ def stream_agent(
 ) -> Iterator[AgentEvent]:
     """Start a run. Stops at the plan-approval interrupt; continue with resume_agent."""
     thread_id = thread_id or uuid.uuid4().hex
-    yield AgentEvent("start", data={"thread_id": thread_id})
+    log = _LOGS[thread_id] = RunLog.create(thread_id)
+    start = AgentEvent("start", data={"thread_id": thread_id})
+    log.event(start)
+    yield start
     model_name = model or DEFAULT_MODEL
+    log.write("run_start", task=task, repo=str(repo_path), model=model_name)
     try:
         graph = build_graph(llm or get_llm(model_name), _CHECKPOINTER)
     except Exception as exc:
-        yield _error(exc)
+        log.write("traceback", traceback=traceback.format_exc())
+        failure = _error(exc)
+        log.event(failure)
+        yield failure
         return
     _GRAPHS[thread_id] = graph
     yield from _drive(

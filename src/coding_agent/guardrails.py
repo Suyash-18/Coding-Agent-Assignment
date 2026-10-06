@@ -170,6 +170,16 @@ def validate_no_secrets(
             )
 
 
+def redact(text: str, env_secrets: Sequence[str] | None = None) -> str:
+    """Replace anything that looks like a secret with [REDACTED] (used for run logs)."""
+    for _, pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    values = _env_secret_values() if env_secrets is None else env_secrets
+    for value in sorted(values, key=len, reverse=True):
+        text = text.replace(value, "[REDACTED]")
+    return text
+
+
 # ---- output: change set ---------------------------------------------------
 def validate_change_set(
     repo: str | Path,

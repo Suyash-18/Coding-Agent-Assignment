@@ -1,4 +1,5 @@
 import shutil
+import uuid
 from pathlib import Path
 
 import pytest
@@ -28,3 +29,14 @@ def sample_repo(tmp_path) -> Path:
         SAMPLE, dest, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache")
     )
     return dest
+
+
+@pytest.fixture(autouse=True)
+def isolated_run_logs(tmp_path_factory, monkeypatch):
+    """Per-run JSON logs go to a throwaway folder, never into the project's ./runs."""
+    monkeypatch.setenv("AGENT_RUNS_DIR", str(tmp_path_factory.mktemp("runlogs")))
+
+
+@pytest.fixture
+def thread_id() -> str:
+    return uuid.uuid4().hex
