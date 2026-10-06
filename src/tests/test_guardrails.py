@@ -246,3 +246,19 @@ class TestValidateBudget:
     def test_over_budget(self):
         with pytest.raises(GuardrailViolation, match="budget guard"):
             g.validate_budget(3, max_retries=2)
+
+
+# ---- redaction (used for run logs) ----------------------------------------
+class TestRedact:
+    def test_known_secret_shapes_are_replaced(self):
+        text = f"key={FAKE_GROQ_KEY} aws={FAKE_AWS_KEY}"
+        out = g.redact(text, env_secrets=[])
+        assert FAKE_GROQ_KEY not in out and FAKE_AWS_KEY not in out
+        assert out.count("[REDACTED]") == 2
+
+    def test_environment_secret_values_are_replaced(self):
+        value = "super-secret-value-1234567890"
+        assert g.redact(f"token is {value}!", env_secrets=[value]) == "token is [REDACTED]!"
+
+    def test_ordinary_text_is_untouched(self):
+        assert g.redact("def add(a, b): return a + b", env_secrets=[]) == "def add(a, b): return a + b"

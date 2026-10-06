@@ -9,9 +9,14 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
+import groq
+import httpx
+
 from coding_agent import cli
 from coding_agent.config import ConfigError
 from coding_agent.runner import AgentEvent
+from coding_agent.schemas import FileSelection
+from tests.fakes import FakeLLM
 from tests.test_graph import BAD, GOOD, make_llm
 
 runner = CliRunner()
@@ -181,3 +186,33 @@ def test_long_diff_is_truncated_with_a_notice():
 def test_status_label_after_tests(will_retry, expected):
     ev = AgentEvent("test", "run_tests", {"attempt": 1, "will_retry": will_retry})
     assert cli._next_label(ev, "x") == expected
+
+
+# ---- hardening: hints, retry notices, run log ------------------------------
+def _rate_limit(retry_after=1):
+    req = httpx.Request("POST", "https://api.groq.com/x")
+    resp = httpx.Response(429, request=req, headers={"retry-after": str(retry_after)})
+    return groq.RateLimitError("Rate limit reached", response=resp, body=None)
+
+
+def test_rate_limit_error_shows_kind_and_hint(invoke, monkeypatch):
+    monkeypatch.setattr("coding_agent.llm._sleep", lambda s: None)
+    llm = FakeLLM(structured={FileSelection: [_rate_limit()] * 4})
+    result = invoke(["--yes"], llm=llm)
+    assert result.exit_code == 1
+    assert "RateLimitError" in result.output and "free tier" in result.output
+
+
+def test_backoff_wait_is_visible_to_the_user(invoke, monkeypatch):
+    monkeypatch.setattr("coding_agent.llm._sleep", lambda s: None)
+    base = make_llm()
+    queue = base._structured[FileSelection]
+    queue.insert(0, _rate_limit())
+    result = invoke(["--yes", "--dry-run"], llm=base)
+    assert result.exit_code == 0, result.output
+    assert "rate limited" in result.output and "retrying in" in result.output
+
+
+def test_run_log_location_is_printed(invoke):
+    result = invoke(["--yes", "--dry-run"])
+    assert "Run log:" in result.output and ".jsonl" in result.output

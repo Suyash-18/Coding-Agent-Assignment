@@ -4,9 +4,9 @@ from typing import Any
 from langgraph.types import interrupt
 
 from coding_agent import prompts
-from coding_agent.errors import AgentError, PathViolation
+from coding_agent.errors import AgentError, LLMError, PathViolation
 from coding_agent.guardrails import validate_budget, validate_change_set, validate_task
-from coding_agent.llm import clean_text, invoke_structured
+from coding_agent.llm import invoke_structured, invoke_text
 from coding_agent.schemas import ChangeSet, FileSelection, Plan
 from coding_agent.state import AgentState
 from coding_agent.tools import (
@@ -222,8 +222,15 @@ class AgentNodes:
 
     def explain(self, state: AgentState) -> dict[str, Any]:
         diff = state["diff"][:MAX_DIFF_CHARS_IN_PROMPT]
-        reply = self.llm.invoke(prompts.explain_messages(state["task"], state["plan"], diff))
-        text = clean_text(reply.content) or state["plan"]["summary"]
+        summary = state["plan"]["summary"]
+        try:
+            text = invoke_text(
+                self.llm, prompts.explain_messages(state["task"], state["plan"], diff)
+            ) or summary
+        except LLMError as exc:
+            # The change is already generated and tested; do not lose it over a
+            # nice-to-have explanation. Fall back to the plan summary.
+            text = f"{summary} (A written explanation was unavailable: {exc})"
         return {"explanation": text, "status": "proposed"}
 
     # ---- helpers ---------------------------------------------------------
