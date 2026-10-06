@@ -5,6 +5,7 @@ from langgraph.types import interrupt
 
 from coding_agent import prompts
 from coding_agent.errors import AgentError, PathViolation
+from coding_agent.guardrails import validate_budget, validate_change_set, validate_task
 from coding_agent.llm import clean_text, invoke_structured
 from coding_agent.schemas import ChangeSet, FileSelection, Plan
 from coding_agent.state import AgentState
@@ -92,7 +93,7 @@ class AgentNodes:
         ]
         return {"diff": "".join(parts), "changed_files": list(state["changes"])}
 
-       # ---- validation (code only) -----------------------------------------
+    # ---- validation (code only) -----------------------------------------
     def run_tests_node(self, state: AgentState) -> dict[str, Any]:
         """Apply the proposed changes to a temp copy and run the tests there."""
         work = copy_to_temp(state["repo_path"])
@@ -114,6 +115,16 @@ class AgentNodes:
 
     def route_after_tests(self, state: AgentState) -> str:
         return "retry" if state.get("will_retry") else "finish"
+
+    # ---- guardrails (code only) -----------------------------------------
+    def input_guard(self, state: AgentState) -> dict[str, Any]:
+        return {"task": validate_task(state["task"])}
+
+    def output_guard(self, state: AgentState) -> dict[str, Any]:
+        changes = state["changes"]
+        existing = {rel: self._existing(state, rel) for rel in changes}
+        validate_change_set(state["repo_path"], changes, existing)
+        return {"changes": changes}
 
     # ---- apply approval --------------------------------------------------
     def apply_approval(self, state: AgentState) -> dict[str, Any]:
@@ -177,6 +188,7 @@ class AgentNodes:
         return {"plan": plan.model_dump(exclude={"needs_files"}), "needs_files": []}
 
     def generate_changes(self, state: AgentState) -> dict[str, Any]:
+        validate_budget(state.get("attempts", 0), MAX_RETRIES)
         repo = state["repo_path"]
         root = Path(repo).resolve()
         is_retry = state.get("attempts", 0) > 0 and not state.get("test_passed", False)

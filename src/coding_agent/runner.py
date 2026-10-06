@@ -40,7 +40,9 @@ _SUMMARIES = {
 }
 
 
-def _translate(node: str, update: dict[str, Any]) -> AgentEvent:
+def _translate(node: str, update: dict[str, Any]) -> AgentEvent | None:
+    if node in ("input_guard", "output_guard"):
+        return None  # silent on success; violations surface as an `error` event
     if node == "make_plan":
         if "plan" in update:
             return AgentEvent("plan", node, {"plan": update["plan"]})
@@ -79,7 +81,9 @@ def _drive(graph, graph_input, thread_id: str) -> Iterator[AgentEvent]:
                 if node == "__interrupt__":
                     yield AgentEvent("interrupt", data=update[0].value)
                     return
-                yield _translate(node, update or {})
+                event = _translate(node, update or {})
+                if event is not None:
+                    yield event
         final = graph.get_state(config).values
         yield AgentEvent("done", data={
             "status": final.get("status", "proposed"),

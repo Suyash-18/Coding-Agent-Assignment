@@ -127,7 +127,7 @@ def _copy_ignore(directory: str, names: list[str]) -> list[str]:
 
 
 def copy_to_temp(repo: str | Path) -> Path:
-    """Copy the repo (minus secrets, venvs, caches) to <temp>/<repo name>."""
+    """Copy the repo (minus secrets, venvs, caches) to a fresh temp folder."""
     root = Path(repo).resolve()
     if not root.is_dir():
         raise ToolError(f"Not a directory: {repo}")
@@ -144,6 +144,7 @@ def cleanup_temp(path: str | Path) -> None:
     if not container.name.startswith("coding_agent_"):
         raise ToolError(f"Refusing to delete a folder we did not create: {path}")
     shutil.rmtree(container, ignore_errors=True)
+
 
 def apply_changes(repo: str | Path, changes: dict[str, str]) -> list[str]:
     """Write {relative_path: new_content}. Validates everything before writing."""
@@ -180,11 +181,10 @@ _SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
 
 def _clean_env() -> dict[str, str]:
+    """Environment for the test subprocess: no API keys or secrets."""
     env = {
         k: v for k, v in os.environ.items()
         if not any(marker in k.upper() for marker in _SECRET_MARKERS)
-        and k != "PYTHONPATH"
-        and not k.startswith("PYTEST")
     }
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env

@@ -8,6 +8,8 @@ def build_graph(llm, checkpointer=None):
     nodes = AgentNodes(llm)
     g = StateGraph(AgentState)
 
+    g.add_node("input_guard", nodes.input_guard)
+    g.add_node("output_guard", nodes.output_guard)
     g.add_node("scan_repo", nodes.scan_repo)
     g.add_node("select_files", nodes.select_files)
     g.add_node("read_files", nodes.read_files)
@@ -21,7 +23,8 @@ def build_graph(llm, checkpointer=None):
     g.add_node("apply_approval", nodes.apply_approval)
     g.add_node("apply_changes", nodes.apply_changes_node)
 
-    g.add_edge(START, "scan_repo")
+    g.add_edge(START, "input_guard")
+    g.add_edge("input_guard", "scan_repo")
     g.add_edge("scan_repo", "select_files")
     g.add_edge("select_files", "read_files")
     g.add_edge("read_files", "make_plan")
@@ -36,7 +39,8 @@ def build_graph(llm, checkpointer=None):
         nodes.route_after_plan,
         {"generate": "generate_changes", "stop": END},
     )
-    g.add_edge("generate_changes", "run_tests")
+    g.add_edge("generate_changes", "output_guard")
+    g.add_edge("output_guard", "run_tests")
     g.add_conditional_edges(
         "run_tests",
         nodes.route_after_tests,
