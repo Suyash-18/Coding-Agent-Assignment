@@ -8,14 +8,26 @@ from coding_agent.errors import AgentError, PathViolation
 from coding_agent.llm import clean_text, invoke_structured
 from coding_agent.schemas import ChangeSet, FileSelection, Plan
 from coding_agent.state import AgentState
-from coding_agent.tools import build_diff, is_protected, list_files, read_file, safe_path
+from coding_agent.tools import (
+    apply_changes,
+    build_diff,
+    cleanup_temp,
+    copy_to_temp,
+    is_protected,
+    list_files,
+    read_file,
+    run_tests,
+    safe_path,
+)
 
 MAX_SELECTED_FILES = 6
 MAX_EXPANSIONS = 1
 MAX_EXTRA_FILES = 3
 MAX_CONTEXT_CHARS = 20_000
 MAX_DIFF_CHARS_IN_PROMPT = 12_000
-
+MAX_RETRIES = 2
+TEST_TIMEOUT = 60
+PYTEST_NO_TESTS = 5  # pytest's exit code when nothing was collected
 
 def _clean_rel(path: str) -> str:
     return path.strip().replace("\\", "/").removeprefix("./")
@@ -80,6 +92,52 @@ class AgentNodes:
         ]
         return {"diff": "".join(parts), "changed_files": list(state["changes"])}
 
+        # ---- validation (code only) -----------------------------------------
+    def run_tests_node(self, state: AgentState) -> dict[str, Any]:
+        """Apply the proposed changes to a temp copy and run the tests there."""
+        work = copy_to_temp(state["repo_path"])
+        try:
+            apply_changes(work, state["changes"])
+            result = run_tests(work, timeout=TEST_TIMEOUT)
+        finally:
+            cleanup_temp(work)
+        attempts = state.get("attempts", 0) + 1
+        no_tests = result.returncode == PYTEST_NO_TESTS
+        will_retry = not result.passed and not no_tests and attempts <= MAX_RETRIES
+        return {
+            "attempts": attempts,
+            "test_passed": result.passed,
+            "test_output": result.output,
+            "no_tests": no_tests,
+            "will_retry": will_retry,
+        }
+
+    def route_after_tests(self, state: AgentState) -> str:
+        return "retry" if state.get("will_retry") else "finish"
+
+    # ---- apply approval --------------------------------------------------
+    def apply_approval(self, state: AgentState) -> dict[str, Any]:
+        # Side-effect free (re-runs on resume). Writing happens in apply_changes_node.
+        decision = interrupt({
+            "stage": "apply",
+            "diff": state["diff"],
+            "files": state["changed_files"],
+            "test_passed": state.get("test_passed", False),
+            "no_tests": state.get("no_tests", False),
+            "attempts": state.get("attempts", 0),
+        })
+        approved = bool(decision.get("approved")) if isinstance(decision, dict) else bool(decision)
+        if approved:
+            return {"apply_approved": True}
+        return {"apply_approved": False, "status": "declined"}
+
+    def route_after_apply(self, state: AgentState) -> str:
+        return "apply" if state.get("apply_approved") else "stop"
+
+    def apply_changes_node(self, state: AgentState) -> dict[str, Any]:
+        written = apply_changes(state["repo_path"], state["changes"])
+        return {"applied": True, "status": "applied", "applied_files": written}
+
     # ---- LLM nodes -------------------------------------------------------
     def select_files(self, state: AgentState) -> dict[str, Any]:
         tree = state["file_tree"]
@@ -121,20 +179,28 @@ class AgentNodes:
     def generate_changes(self, state: AgentState) -> dict[str, Any]:
         repo = state["repo_path"]
         root = Path(repo).resolve()
+        is_retry = state.get("attempts", 0) > 0 and not state.get("test_passed", False)
+        previous = dict(state.get("changes", {})) if is_retry else {}
+
         result = invoke_structured(
             self.llm, ChangeSet,
             prompts.generate_messages(
                 state["task"], state["plan"], state["file_contents"],
                 state.get("feedback", ""),
+                previous=previous,
+                test_output=state.get("test_output", "") if is_retry else "",
             ),
         )
-        changes: dict[str, str] = {}
+
+        changes = dict(previous)  # retries merge into the previous attempt
         for item in result.changes:
             rel = _clean_rel(item.path)
             target = safe_path(repo, rel)
             if is_protected(target.relative_to(root)):
                 raise PathViolation(f"The model tried to change a protected file: {rel}")
-            if item.content != self._existing(state, rel):
+            if item.content == self._existing(state, rel):
+                changes.pop(rel, None)  # same as the original: no change (or a revert)
+            else:
                 changes[rel] = item.content
         if not changes:
             raise AgentError(
