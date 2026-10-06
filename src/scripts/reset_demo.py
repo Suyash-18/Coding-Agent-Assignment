@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "sample_project"
-DEST = ROOT / "demo_repo" / "sample_project"  # must keep the name "sample_project" (see PLAN.md)
+DEST = ROOT / "demo" / "sample_project"  # must keep the name "sample_project" (see PLAN.md)
 
 
 def main() -> None:

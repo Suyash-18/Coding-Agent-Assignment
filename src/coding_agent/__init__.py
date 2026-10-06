@@ -1,2 +1,5 @@
 def main() -> None:
-    print("Hello from agents!")
+    """Console-script entry point (`coding-agent`). Imported lazily to keep `import coding_agent` light."""
+    from coding_agent.cli import main as cli_main
+
+    cli_main()
