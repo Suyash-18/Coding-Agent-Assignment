@@ -17,6 +17,9 @@ def build_graph(llm, checkpointer=None):
     g.add_node("generate_changes", nodes.generate_changes)
     g.add_node("build_diff", nodes.build_diff_node)
     g.add_node("explain", nodes.explain)
+    g.add_node("run_tests", nodes.run_tests_node)
+    g.add_node("apply_approval", nodes.apply_approval)
+    g.add_node("apply_changes", nodes.apply_changes_node)
 
     g.add_edge(START, "scan_repo")
     g.add_edge("scan_repo", "select_files")
@@ -33,8 +36,19 @@ def build_graph(llm, checkpointer=None):
         nodes.route_after_plan,
         {"generate": "generate_changes", "stop": END},
     )
-    g.add_edge("generate_changes", "build_diff")
+    g.add_edge("generate_changes", "run_tests")
+    g.add_conditional_edges(
+        "run_tests",
+        nodes.route_after_tests,
+        {"retry": "generate_changes", "finish": "build_diff"},
+    )
     g.add_edge("build_diff", "explain")
-    g.add_edge("explain", END)
+    g.add_edge("explain", "apply_approval")
+    g.add_conditional_edges(
+        "apply_approval",
+        nodes.route_after_apply,
+        {"apply": "apply_changes", "stop": END},
+    )
+    g.add_edge("apply_changes", END)
 
     return g.compile(checkpointer=checkpointer)

@@ -17,7 +17,7 @@ _GRAPHS: dict[str, Any] = {}
 
 @dataclass
 class AgentEvent:
-    type: str  # start | node_done | plan | diff | interrupt | error | done
+    type: str  # start | node_done | plan | test | diff | interrupt | error | done
     node: str = ""
     data: dict[str, Any] = field(default_factory=dict)
 
@@ -35,6 +35,8 @@ _SUMMARIES = {
     "generate_changes": lambda u: {"files": list(u["changes"])},
     "explain": lambda u: {"explanation": u["explanation"]},
     "expand_files": lambda u: {"relevant_files": u["relevant_files"]},
+    "apply_approval": lambda u: {"approved": u.get("apply_approved", False)},
+    "apply_changes": lambda u: {"files": u["applied_files"]},
 }
 
 
@@ -43,6 +45,14 @@ def _translate(node: str, update: dict[str, Any]) -> AgentEvent:
         if "plan" in update:
             return AgentEvent("plan", node, {"plan": update["plan"]})
         return AgentEvent("node_done", node, {"needs_files": update["needs_files"]})
+    if node == "run_tests":
+        return AgentEvent("test", node, {
+            "passed": update["test_passed"],
+            "attempt": update["attempts"],
+            "will_retry": update["will_retry"],
+            "no_tests": update["no_tests"],
+            "output": update["test_output"],
+        })
     if node == "build_diff":
         return AgentEvent("diff", node, {"diff": update["diff"], "files": update["changed_files"]})
     summarize = _SUMMARIES.get(node, lambda u: {})
@@ -72,13 +82,15 @@ def _drive(graph, graph_input, thread_id: str) -> Iterator[AgentEvent]:
                 yield _translate(node, update or {})
         final = graph.get_state(config).values
         yield AgentEvent("done", data={
-                "status": final.get("status", "proposed"),
-                "applied": final.get("applied", False),
-                "plan": final.get("plan"),
-                "diff": final.get("diff", ""),
-                "changed_files": final.get("changed_files", []),
-                "explanation": final.get("explanation", ""),
-            })
+            "status": final.get("status", "proposed"),
+            "applied": final.get("applied", False),
+            "test_passed": final.get("test_passed", False),
+            "attempts": final.get("attempts", 0),
+            "plan": final.get("plan"),
+            "diff": final.get("diff", ""),
+            "changed_files": final.get("changed_files", []),
+            "explanation": final.get("explanation", ""),
+        })
     except Exception as exc:  # boundary: never leak a traceback to the UI
         yield _error(exc)
 

@@ -92,24 +92,24 @@ class AgentNodes:
         ]
         return {"diff": "".join(parts), "changed_files": list(state["changes"])}
 
-        # ---- validation (code only) -----------------------------------------
+       # ---- validation (code only) -----------------------------------------
     def run_tests_node(self, state: AgentState) -> dict[str, Any]:
         """Apply the proposed changes to a temp copy and run the tests there."""
         work = copy_to_temp(state["repo_path"])
+        attempts = state.get("attempts", 0) + 1
         try:
             apply_changes(work, state["changes"])
             result = run_tests(work, timeout=TEST_TIMEOUT)
         finally:
             cleanup_temp(work)
-        attempts = state.get("attempts", 0) + 1
+
         no_tests = result.returncode == PYTEST_NO_TESTS
-        will_retry = not result.passed and not no_tests and attempts <= MAX_RETRIES
         return {
             "attempts": attempts,
             "test_passed": result.passed,
             "test_output": result.output,
             "no_tests": no_tests,
-            "will_retry": will_retry,
+            "will_retry": (not result.passed) and (not no_tests) and attempts <= MAX_RETRIES,
         }
 
     def route_after_tests(self, state: AgentState) -> str:
