@@ -32,30 +32,25 @@ test proving that an uppercase email is normalized correctly."*
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    U[User] --> UI[Streamlit UI]
-    U --> CLI[CLI - Typer + Rich]
-    UI -->|HTTP + SSE| API[FastAPI backend]
-    API --> R[runner: stream_agent / resume_agent]
-    CLI --> R
-    R --> G[LangGraph agent]
-    G --> T[Tools: list/read files, diff, apply, pytest]
-    G --> L[Groq LLM]
-    T --> P[(Repository copy)]
-```
-
 The CLI, the API and the Streamlit app all consume the **same event stream** from
 `stream_agent()` / `resume_agent()`, so there is one agent engine and three ways to use it.
 
 Agent graph (LangGraph, with two human-approval interrupts):
 
+<center><img src="/docs/graph.png" width="200" height="600"></center>
+
+
 ```
 input_guard → scan_repo → select_files → read_files → make_plan ⇄ expand_files
    → plan_approval ⏸ → generate_changes → output_guard → run_tests
-        ↳ failed and retries left → generate_changes (with test output)
+       ↳ failed and retries left → generate_changes (with test output)
    → build_diff → explain → apply_approval ⏸ → apply_changes
+
 ```
+
+## LangGraph Diagram
+
+The following is the graph of LangGraph:
 
 ## Project layout
 
@@ -69,8 +64,8 @@ src/
     ...              graph, nodes, prompts, guardrails, tools, llm, config, run logs
   sample_project/    small FastAPI user manager used as the target of the demos
 demo/sample_project/ working copy the agent edits (recreated by reset_demo)
-runs/                JSON-lines log of every run
 docs/                openapi.yaml, APPROACH.md
+
 ```
 
 ## Run it locally
@@ -79,7 +74,7 @@ docs/                openapi.yaml, APPROACH.md
 [Groq](https://console.groq.com/) API key.
 
 ```bash
-git clone https://github.com/Suyash-18/Coding-Agent-Assignment.git
+git clone [https://github.com/Suyash-18/Coding-Agent-Assignment.git](https://github.com/Suyash-18/Coding-Agent-Assignment.git)
 cd Coding-Agent-Assignment
 uv sync
 ```
@@ -135,7 +130,7 @@ Wherever the model is involved the tests use a fake LLM, so they need no API key
 ## Using the web app
 
 | Page | What it is for |
-|---|---|
+| --- | --- |
 | **Run agent** | Enter a task (or click an example), watch the live timeline, approve the plan, review tests, diff and explanation, then apply or decline. |
 | **Repositories** | Browse files, see changes compared with the pristine sample, reset the demo repo. |
 | **History** | Every past run listed by its prompt; open one to see the plan, tests, diff and explanation again. |
@@ -147,7 +142,7 @@ The sidebar chooses the model for new runs.
 ## Configuration
 
 | Variable | Used by | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `GROQ_API_KEY` | backend, CLI | Groq API key (**required**) |
 | `MODEL_NAME` | backend, CLI | Default model (`openai/gpt-oss-120b`) |
 | `MODEL_NAME2` | UI, evals | Second model offered in the sidebar (`qwen/qwen3.8-27b`) |
@@ -174,7 +169,7 @@ curl -N $API/runs/$RUN_ID/events
 
 # 3. approve the plan, then later the apply step
 curl -X POST $API/runs/$RUN_ID/decision -H "Content-Type: application/json" \
-  -d '{"stage": "plan", "action": "approve"}'
+  -d '{"approved": true, "feedback": ""}'
 
 # 4. read the result or download the patch
 curl $API/runs/$RUN_ID/result
@@ -185,19 +180,19 @@ Full reference: [`docs/openapi.yaml`](docs/openapi.yaml). Paste it into https://
 
 ## Safety
 
-- **Path safety:** file access is confined to the repository (no `..`, absolute paths or symlink escapes); `.git`, `.env`, binaries and oversized files are ignored.
-- **Input guard:** blocks over-long, non-coding, injection and secret-extraction requests, before any model call.
-- **Output guard:** checks the model's output schema, paths, file and diff size, secret patterns and protected files.
-- **Human approval:** two interrupts (plan, apply); `--yes` never applies a change whose tests failed.
-- **Secrets:** event payloads are redacted before they are stored or streamed; no keys are in the repository.
-- **Hosted limits:** per-client and global run limits, one writer per repository, and a time limit on paused runs.
+* **Path safety:** file access is confined to the repository (no `..`, absolute paths or symlink escapes); `.git`, `.env`, binaries and oversized files are ignored.
+* **Input guard:** blocks over-long, non-coding, injection and secret-extraction requests, before any model call.
+* **Output guard:** checks the model's output schema, paths, file and diff size, secret patterns and protected files.
+* **Human approval:** two interrupts (plan, apply); `--yes` never applies a change whose tests failed.
+* **Secrets:** event payloads are redacted before they are stored or streamed; no keys are in the repository.
+* **Hosted limits:** per-client and global run limits, one writer per repository, and a time limit on paused runs.
 
 ## Deployment
 
 Both services run on [Render](https://render.com) as Python web services from this repository:
 
 | Service | Start command |
-|---|---|
+| --- | --- |
 | Backend | `uv run --no-sync uvicorn --factory coding_agent.api.app:create_app --host 0.0.0.0 --port $PORT` |
 | Frontend | `uv run --no-sync streamlit run src/coding_agent/ui/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true` |
 
@@ -210,3 +205,7 @@ Health check: `/health`.
 See [`docs/APPROACH.md`](docs/APPROACH.md) for the approach, assumptions and limitations. In short:
 the hosted demo edits one shared demo repository, state is kept in memory (a restart ends running runs),
 and the free Groq tier can rate-limit model calls.
+
+```
+
+```
