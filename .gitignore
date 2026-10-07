@@ -9,7 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .env
-demo
+# demo
 runs
 backend
 frontend
