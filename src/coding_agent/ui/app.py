@@ -708,7 +708,7 @@ def about_page() -> None:
     st.subheader("Getting around")
     st.markdown(
         "- **Sidebar, top:** the backend's API URL and its connection status. The URL comes from "
-        "`CODING_AGENT_API_URL` in the environment (default `http://localhost:8000`). If it is "
+        "`CODING_AGENT_API_URL` in the environment. If it is "
         "wrong or the backend is stopped, you'll see an error and the pages stay hidden.\n"
         "- **Sidebar, Model:** the model used for new runs and for scripts that take a model.\n"
         "- **Sidebar, Page:** switch between the pages below. Your run in progress is kept while "
