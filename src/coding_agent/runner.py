@@ -19,10 +19,10 @@ _GRAPHS: dict[str, Any] = {}
 _LOGS: dict[str, RunLog] = {}
 
 
-def run_log_path(thread_id: str) -> Path | None:
-    """The JSON-lines log of a run, once something has been written to it."""
+def run_log_id(thread_id: str) -> str | None:
+    """The run_id of a run's log in MongoDB, once something has been written."""
     log = _LOGS.get(thread_id)
-    return log.path if log and log.path and log.path.exists() else None
+    return log.run_id if log and log.written else None
 
 
 @dataclass

@@ -17,6 +17,7 @@ from coding_agent.api.runs import Run, RunManager
 from coding_agent.api.safety import precheck_text
 from coding_agent.api.schemas import DecisionRequest, RunCreate, ScriptRequest
 from coding_agent.api.settings import Settings
+from coding_agent import mongo
 
 DESCRIPTION = """
 HTTP API for the coding agent. Typical flow:
@@ -112,7 +113,7 @@ def create_app(
             "llm_key_configured": bool(os.getenv("GROQ_API_KEY")),
             "repos": {rid: info.ready for rid, info in repos_api.registry(settings).items()},
             "active_runs": manager.active_count(),
-            "run_logs": settings.runs_dir is not None,
+            "run_logs": mongo.enabled(),
         }
     @app.get("/health-corn", tags=["system"])
     def health() -> dict[str, Any]:

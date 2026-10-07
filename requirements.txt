@@ -9,3 +9,4 @@ httpx
 requests
 streamlit
 fastapi[standard]
+pymongo
