@@ -1,0 +1,765 @@
+openapi: 3.0.3
+info:
+  title: Coding Agent API
+  version: "1.0.0"
+  description: |
+    HTTP API for the Coding Agent: give it a coding task in natural language and it selects the
+    relevant files, proposes a plan, generates changes, runs the tests and returns a diff.
+    Nothing is written to the repository until the user approves the final step.
+
+    **Typical flow**
+
+    1. `POST /runs` with a task, then `GET /runs/{run_id}/events` (Server-Sent Events).
+    2. When an `interrupt` event arrives, answer it with `POST /runs/{run_id}/decision`
+       (stage `plan` first, then stage `apply`).
+    3. Read `GET /runs/{run_id}/result` or download `GET /runs/{run_id}/patch`.
+
+    The live, auto-generated Swagger UI of the running service is available at `/docs`
+    (and the raw schema at `/openapi.json`). This file is a hand-maintained copy for the
+    submission and for readers without a running server.
+servers:
+  - url: "{baseUrl}"
+    description: Backend base URL
+    variables:
+      baseUrl:
+        default: http://localhost:8000
+        description: Use http://localhost:8000 locally, or the Render URL of the backend service.
+tags:
+  - name: system
+    description: Health and configuration
+  - name: repos
+    description: Repositories the agent can work on
+  - name: runs
+    description: Start, follow, approve and read agent runs
+  - name: scripts
+    description: Maintenance and demo scripts run as background jobs
+  - name: history
+    description: JSON-lines logs of past runs
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Service health
+      operationId: health
+      responses:
+        "200":
+          description: The service is up.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /models:
+    get:
+      tags: [system]
+      summary: Default and allowed models
+      operationId: listModels
+      responses:
+        "200":
+          description: Models that `POST /runs` accepts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Models" }
+
+  /repos:
+    get:
+      tags: [repos]
+      summary: List repositories
+      operationId: listRepos
+      responses:
+        "200":
+          description: Repositories registered with the backend.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Repo" }
+
+  /repos/{repo_id}/files:
+    get:
+      tags: [repos]
+      summary: List the files of a repository
+      operationId: listRepoFiles
+      parameters:
+        - $ref: "#/components/parameters/RepoId"
+      responses:
+        "200":
+          description: Files the agent is allowed to see (ignore rules applied).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RepoFiles" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /repos/{repo_id}/files/{path}:
+    get:
+      tags: [repos]
+      summary: Read one file
+      operationId: readRepoFile
+      description: "`path` may contain slashes, for example `tests/test_users.py`."
+      parameters:
+        - $ref: "#/components/parameters/RepoId"
+        - name: path
+          in: path
+          required: true
+          description: Path of the file inside the repository.
+          schema: { type: string }
+      responses:
+        "200":
+          description: File contents.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RepoFile" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /repos/{repo_id}/diff:
+    get:
+      tags: [repos]
+      summary: Changes compared with the pristine sample project
+      operationId: repoDiff
+      parameters:
+        - $ref: "#/components/parameters/RepoId"
+      responses:
+        "200":
+          description: Unified diff of everything that differs from the pristine sample.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RepoDiff" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /repos/{repo_id}/reset:
+    post:
+      tags: [repos]
+      summary: Reset the demo repository
+      operationId: resetRepo
+      description: |
+        Replaces the demo repository with a fresh copy of the pristine sample project.
+        Fails with `409 repo_busy` while a run or script is using the repository.
+      parameters:
+        - $ref: "#/components/parameters/RepoId"
+      responses:
+        "200":
+          description: The repository was reset.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /runs:
+    post:
+      tags: [runs]
+      summary: Start a run
+      operationId: createRun
+      description: |
+        Validates the task, claims the repository (one writer at a time) and starts the agent in
+        the background. Follow progress with `GET /runs/{run_id}/events`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunCreate" }
+            example:
+              task: Add input validation to the create-user API and write a test
+              repo_id: demo
+              model: openai/gpt-oss-120b
+      responses:
+        "201":
+          description: The run was created.
+          headers:
+            Location:
+              description: Path of the new run.
+              schema: { type: string, example: /runs/4f1c0a9e2b7d4c6f8a1b3c5d7e9f0a2b }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunCreated" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Error" }
+    get:
+      tags: [runs]
+      summary: List runs
+      operationId: listRuns
+      description: Runs held in memory by the backend, newest first.
+      responses:
+        "200":
+          description: Run summaries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RunSummary" }
+
+  /runs/{run_id}:
+    get:
+      tags: [runs]
+      summary: Run status
+      operationId: getRun
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Current state of the run, including the pending approval request if any.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunDetail" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /runs/{run_id}/events:
+    get:
+      tags: [runs]
+      summary: Stream run events (Server-Sent Events)
+      operationId: runEvents
+      description: |
+        Stays open across approval pauses and ends when the run finishes. Each frame looks like
+
+        ```
+        id: 7
+        event: node_done
+        data: {"seq": 7, "type": "node_done", "node": "select_files", "data": {...}}
+        ```
+
+        Idle periods send `: keep-alive` comment lines. Reconnect with `after=<last seq>` (or the
+        `Last-Event-ID` header) to resume without repeats.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - name: after
+          in: query
+          description: Only events with a `seq` greater than this.
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: follow
+          in: query
+          description: Keep the stream open until the run finishes.
+          schema: { type: boolean, default: true }
+        - name: Last-Event-ID
+          in: header
+          description: Standard SSE resume header; the larger of this and `after` is used.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE frames whose `data` is an `AgentEvent` JSON object.
+        "404": { $ref: "#/components/responses/Error" }
+
+  /runs/{run_id}/decision:
+    post:
+      tags: [runs]
+      summary: Answer an approval request
+      operationId: decideRun
+      description: |
+        The run pauses twice and waits for you: once to approve the **plan** and once to approve
+        **applying** the changes. `409 wrong_state` is returned if the run is not waiting for the
+        given stage. A paused run expires after 30 minutes without a decision.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecisionRequest" }
+            examples:
+              approvePlan:
+                summary: Approve the plan with a note for the model
+                value: { stage: plan, action: approve, feedback: Also keep the existing tests. }
+              applyChanges:
+                summary: Apply the changes
+                value: { stage: apply, action: approve }
+      responses:
+        "200":
+          description: The decision was accepted and the run continues.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunSummary" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /runs/{run_id}/result:
+    get:
+      tags: [runs]
+      summary: Result of a run
+      operationId: runResult
+      description: Everything the UI shows. `ready` is true once the run has finished.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Plan, tests, diff and explanation collected so far.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunResult" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /runs/{run_id}/patch:
+    get:
+      tags: [runs]
+      summary: Download the proposed patch
+      operationId: runPatch
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Unified diff as a file download (`<run id prefix>.patch`).
+          content:
+            text/x-diff:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /runs/{run_id}/cancel:
+    post:
+      tags: [runs]
+      summary: Cancel a run
+      operationId: cancelRun
+      description: |
+        A run that is waiting for approval is finished immediately. A run that is working stops
+        at the next event boundary.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Current run summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunSummary" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /scripts:
+    get:
+      tags: [scripts]
+      summary: List available scripts
+      operationId: listScripts
+      responses:
+        "200":
+          description: Scripts such as `smoke`, `reset_demo`, `check_demo` and `dev_run`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ScriptSpec" }
+
+  /scripts/jobs:
+    get:
+      tags: [scripts]
+      summary: List script jobs
+      operationId: listJobs
+      responses:
+        "200":
+          description: Jobs started since the backend booted.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Job" }
+
+  /scripts/jobs/{job_id}:
+    get:
+      tags: [scripts]
+      summary: Job status and output
+      operationId: getJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /scripts/{name}:
+    post:
+      tags: [scripts]
+      summary: Run a script
+      operationId: runScript
+      description: |
+        Starts the script as a background job and returns right away (`202`), or waits up to
+        `wait` seconds for it to finish. Poll `GET /scripts/jobs/{job_id}` for long jobs.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Script name from `GET /scripts`.
+          schema: { type: string, example: check_demo }
+        - name: wait
+          in: query
+          description: Seconds to wait for the result before returning.
+          schema: { type: number, minimum: 0, maximum: 120, default: 0 }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScriptRequest" }
+            example:
+              task: Add docstrings to all route functions
+              model: openai/gpt-oss-120b
+              apply: false
+      responses:
+        "202":
+          description: The job was started (it may already be finished if `wait` was used).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /history:
+    get:
+      tags: [history]
+      summary: List run logs
+      operationId: listHistory
+      responses:
+        "200":
+          description: One entry per saved run log.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HistoryItem" }
+
+  /history/{name}:
+    get:
+      tags: [history]
+      summary: Read a run log
+      operationId: readHistory
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Log file name, for example `20261007T021719Z_e58510c6.jsonl`.
+          schema: { type: string }
+        - name: limit
+          in: query
+          description: Maximum number of records to return.
+          schema: { type: integer, minimum: 1, maximum: 5000, default: 500 }
+      responses:
+        "200":
+          description: The parsed log.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HistoryLog" }
+        "404": { $ref: "#/components/responses/Error" }
+
+components:
+  parameters:
+    RepoId:
+      name: repo_id
+      in: path
+      required: true
+      description: Repository id from `GET /repos` (for example `demo`).
+      schema: { type: string, example: demo }
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      description: Id returned by `POST /runs`.
+      schema: { type: string }
+
+  responses:
+    Error:
+      description: |
+        The request failed. `detail.code` is a stable machine-readable code, for example
+        `unknown_repo`, `repo_read_only`, `repo_busy`, `repo_not_ready`, `model_not_allowed`,
+        `wrong_state`, `already_finished`, `unknown_run`, `no_diff_yet`, `llm_unavailable`,
+        `validation_error` or `not_found`. Requests rejected by the input guardrails also use this shape.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    RateLimited:
+      description: Too many runs. Retry after the number of seconds in `Retry-After`.
+      headers:
+        Retry-After:
+          description: Seconds until the client may try again.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+
+  schemas:
+    ApiError:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: repo_busy }
+            message: { type: string, example: "Repo 'demo' is busy (run 4f1c0a9e...)." }
+          additionalProperties: true
+          description: Extra fields such as `allowed`, `available`, `state` or `retry_after` may be present.
+
+    Health:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+        version: { type: string, example: 0.1.0 }
+        uptime_s: { type: number }
+        default_model: { type: string, example: openai/gpt-oss-120b }
+        llm_key_configured: { type: boolean, description: Whether GROQ_API_KEY is set on the server. }
+        repos:
+          type: object
+          additionalProperties: { type: boolean }
+          description: Repository id mapped to whether it is ready.
+        active_runs: { type: integer }
+        run_logs: { type: boolean, description: Whether run logs are being written. }
+
+    Models:
+      type: object
+      properties:
+        default: { type: string, example: openai/gpt-oss-120b }
+        allowed:
+          type: array
+          items: { type: string }
+          example: [openai/gpt-oss-120b, qwen/qwen3.8-27b]
+
+    Repo:
+      type: object
+      properties:
+        id: { type: string, example: demo }
+        label: { type: string, example: Demo repo (agent target) }
+        description: { type: string }
+        writable: { type: boolean }
+        ready: { type: boolean }
+        path: { type: string, example: demo/sample_project }
+
+    RepoFiles:
+      type: object
+      properties:
+        repo_id: { type: string }
+        files:
+          type: array
+          items:
+            oneOf:
+              - type: string
+              - type: object
+                additionalProperties: true
+          description: File paths, or objects that carry a `path`.
+
+    RepoFile:
+      type: object
+      properties:
+        content: { type: string }
+      additionalProperties: true
+
+    RepoDiff:
+      type: object
+      properties:
+        diff: { type: string, description: Unified diff; empty when nothing changed. }
+      additionalProperties: true
+
+    RunCreate:
+      type: object
+      required: [task, repo_id]
+      properties:
+        task: { type: string, description: What should change, in plain language., example: Add a /health endpoint with a test }
+        repo_id: { type: string, example: demo }
+        model:
+          type: string
+          nullable: true
+          description: One of `GET /models` `allowed`. Defaults to the server's default model.
+
+    RunState:
+      type: string
+      enum: [running, awaiting_plan, awaiting_apply, completed, failed]
+
+    RunSummary:
+      type: object
+      properties:
+        run_id: { type: string }
+        state: { $ref: "#/components/schemas/RunState" }
+        repo_id: { type: string }
+        model: { type: string }
+        task: { type: string }
+        pending_stage:
+          type: string
+          nullable: true
+          enum: [plan, apply]
+          description: Which approval the run is waiting for, if any.
+        events: { type: integer, description: Number of events recorded so far. }
+        created_at: { type: number, description: Unix time. }
+        updated_at: { type: number, description: Unix time. }
+
+    RunCreated:
+      allOf:
+        - $ref: "#/components/schemas/RunSummary"
+        - type: object
+          properties:
+            events_url: { type: string, example: /runs/4f1c.../events }
+            result_url: { type: string, example: /runs/4f1c.../result }
+
+    RunDetail:
+      allOf:
+        - $ref: "#/components/schemas/RunSummary"
+        - type: object
+          properties:
+            pending:
+              type: object
+              nullable: true
+              additionalProperties: true
+              description: The data of the current approval request (plan, or diff and test status).
+
+    DecisionRequest:
+      type: object
+      required: [stage, action]
+      properties:
+        stage: { type: string, enum: [plan, apply] }
+        action: { type: string, enum: [approve, reject] }
+        feedback:
+          type: string
+          nullable: true
+          description: Optional note for the model. Used only when approving the plan.
+
+    PlanStep:
+      type: object
+      properties:
+        file: { type: string, example: tests/test_users.py }
+        action: { type: string }
+
+    Plan:
+      type: object
+      properties:
+        summary: { type: string }
+        steps:
+          type: array
+          items: { $ref: "#/components/schemas/PlanStep" }
+        assumptions:
+          type: array
+          items: { type: string }
+
+    TestAttempt:
+      type: object
+      properties:
+        attempt: { type: integer }
+        passed: { type: boolean }
+        will_retry: { type: boolean }
+        no_tests: { type: boolean, description: pytest collected no tests. }
+        output: { type: string, description: Tail of the pytest output (last 4000 characters). }
+
+    RunResult:
+      type: object
+      properties:
+        run_id: { type: string }
+        state: { $ref: "#/components/schemas/RunState" }
+        ready: { type: boolean, description: True once the run has finished. }
+        status:
+          type: string
+          nullable: true
+          example: applied
+          description: "Final status, for example `applied`, `declined`, `rejected`, `cancelled`, `expired` or `proposed`."
+        applied: { type: boolean }
+        task: { type: string }
+        repo_id: { type: string }
+        model: { type: string }
+        plan:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Plan"
+        selected_files:
+          type: array
+          items: { type: string }
+        changed_files:
+          type: array
+          items: { type: string }
+        diff: { type: string }
+        explanation: { type: string }
+        test_passed: { type: boolean, nullable: true }
+        attempts: { type: integer }
+        tests:
+          type: array
+          items: { $ref: "#/components/schemas/TestAttempt" }
+        error:
+          type: object
+          nullable: true
+          properties:
+            message: { type: string }
+            kind: { type: string }
+            hint: { type: string }
+
+    AgentEvent:
+      type: object
+      description: One step of a run, as sent over SSE and stored in run logs.
+      properties:
+        seq: { type: integer, description: Position in the run, starting at 1. }
+        type:
+          type: string
+          enum: [start, node_done, plan, test, diff, interrupt, error, done]
+        node:
+          type: string
+          description: |
+            Graph node that produced the event, for example `scan_repo`, `select_files`,
+            `read_files`, `make_plan`, `plan_approval`, `generate_changes`, `run_tests`,
+            `build_diff`, `explain`, `apply_approval` or `apply_changes`.
+        data:
+          type: object
+          additionalProperties: true
+          description: Payload that depends on `type` and `node` (plan, test output, diff, files, and so on).
+
+    ScriptSpec:
+      type: object
+      properties:
+        name: { type: string, example: dev_run }
+        description: { type: string }
+        available: { type: boolean }
+        uses_llm: { type: boolean }
+        mutates_demo: { type: boolean }
+        params:
+          type: array
+          items: { type: string }
+          description: Names of the request-body fields the script accepts.
+
+    ScriptRequest:
+      type: object
+      description: Parameters depend on the script. `GET /scripts` lists them for each one.
+      properties:
+        task: { type: string, description: Task for `dev_run`. }
+        model: { type: string, description: Model for scripts that call the LLM. }
+        apply: { type: boolean, description: "`dev_run`: apply the changes after the tests pass." }
+      additionalProperties: true
+
+    Job:
+      type: object
+      properties:
+        job_id: { type: string }
+        script: { type: string, example: check_demo }
+        state: { type: string, example: succeeded, description: "For example `running`, `succeeded` or `failed`." }
+        exit_code: { type: integer, nullable: true }
+        args:
+          type: array
+          items: { type: string }
+        stdout: { type: string }
+        stderr: { type: string }
+        duration_s: { type: number, nullable: true }
+
+    HistoryItem:
+      type: object
+      properties:
+        name: { type: string, example: 20261007T021719Z_e58510c6.jsonl }
+        size: { type: integer, description: Size in bytes. }
+        modified: { type: string, format: date-time }
+
+    HistoryLog:
+      type: object
+      properties:
+        name: { type: string }
+        events:
+          type: array
+          items:
+            type: object
+            description: |
+              A log record: `ts`, `elapsed_ms`, `run_id`, `type`, `node`, `data`. The `run_start`
+              record also carries `task`, `repo` and `model`.
+            additionalProperties: true
+        truncated: { type: boolean, description: True when the log had more records than `limit`. }
