@@ -114,6 +114,11 @@ def create_app(
             "active_runs": manager.active_count(),
             "run_logs": settings.runs_dir is not None,
         }
+    @app.get("/health-corn", tags=["system"])
+    def health() -> dict[str, Any]:
+        return {
+            "status": "ok",
+        }
 
     @app.get("/models", tags=["system"])
     def models() -> dict[str, Any]:
