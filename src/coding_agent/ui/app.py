@@ -34,7 +34,7 @@ st.set_page_config(page_title="Coding Agent", page_icon="🛠️", layout="wide"
 PAGES = ["Run agent", "Repositories", "History", "Scripts", "About"]
 EXAMPLES = {
     "Add validation": "Add input validation to the create-user API and write a test",
-    "Add /health": "Add a /health endpoint with a test",
+    "Add /health": "Add a /health route in route.py with a test",
     "Rename function": "Rename normalize_email to normalize_email_address everywhere",
     "Add docstrings": "Add docstrings to all route functions",
 }
